@@ -135,7 +135,8 @@ class RucioListener(stomp.ConnectionListener):
         logger.info(f'Full list of transfers being tracked:\n\t{self.transfers_by_rse}')
 
 class RucioTransferTest:
-    def __init__(self, rucio_account, rucio_scope, data_dir, file_size, start_rse, dst_rses, all_files, check_time):
+    def __init__(self, rucio_account, rucio_scope, data_dir, file_size, start_rse, dst_rses, all_files,
+            check_time, proxy):
         self.check_time = check_time
         self.rucio_account = rucio_account
         self.rucio_scope = rucio_scope
@@ -144,6 +145,7 @@ class RucioTransferTest:
         self.start_rse = start_rse
         self.dst_rses = dst_rses
         self.all_files = all_files
+        self.proxy = proxy
         self.listener_thread = None
         self.is_subscribed = threading.Event()
         self.failed = threading.Event()
@@ -210,6 +212,7 @@ class RucioTransferTest:
         conn.set_listener('RucioListener', rucio_listener)
         logger.info(f'Listener thread connecting to event stream at: {host}:{port}')
         i = 0
+        import pdb; pdb.set_trace
         while i < self.retry_count:
             try:
                 conn.connect(wait=True)
@@ -261,35 +264,42 @@ class RucioTransferTest:
         return all_done
 
     def rucio_upload(self, filepath):
+        proxy_arg = '--certificate {proxy}'.format(proxy=self.proxy)
         account_arg = '-a {rucio_account}'.format(rucio_account=self.rucio_account)
         rse_arg = '--rse {start_rse}'.format(start_rse=self.start_rse)
-        cmd = 'rucio {account_arg} upload {rse_arg} {filepath}'.format(account_arg=account_arg, rse_arg=rse_arg, filepath=filepath)
+        cmd = 'rucio {proxy_arg} {account_arg} upload {rse_arg} {filepath}'\
+            .format(proxy_arg=proxy_arg, account_arg=account_arg, rse_arg=rse_arg, filepath=filepath)
         logger.info(f'Running command: {cmd}')
         rucio_upload_proc = subprocess.run(cmd, shell=True)
         assert rucio_upload_proc.returncode == 0
 
     def rucio_create_dataset(self, didfile_path):
+        proxy_arg = '--certificate {proxy}'.format(proxy=self.proxy)
         dataset_name = str(uuid.uuid1())
         account_arg = '-a {rucio_account}'.format(rucio_account=self.rucio_account)
         dataset_did = 'user.{rucio_account}:{dataset_name}'.format(rucio_account=self.rucio_account, dataset_name=dataset_name)
-        cmd = 'rucio {account_arg} add-dataset {dataset_did}'.format(account_arg=account_arg, dataset_did=dataset_did)
+        cmd = 'rucio {proxy_arg} {account_arg} add-dataset {dataset_did}'\
+            .format(proxy_arg=proxy_arg, account_arg=account_arg, dataset_did=dataset_did)
         logger.info(f'Running command: {cmd}')
         rucio_create_ds_proc = subprocess.run(cmd, shell=True)
         assert rucio_create_ds_proc.returncode == 0
         return dataset_did
 
     def rucio_attach_dataset(self, dataset_did, didfile_path):
+        proxy_arg = '--certificate {proxy}'.format(proxy=self.proxy)
         account_arg = '-a {rucio_account}'.format(rucio_account=self.rucio_account)
         didfile_arg = '-f {didfile_path}'.format(didfile_path=didfile_path)
-        cmd = 'rucio {account_arg} attach {dataset_did} {didfile_arg}'.format(account_arg=account_arg, dataset_did=dataset_did, didfile_arg=didfile_arg)
+        cmd = 'rucio {proxy_arg} {account_arg} attach {dataset_did} {didfile_arg}'\
+            .format(proxy_arg=proxy_arg, account_arg=account_arg, dataset_did=dataset_did, didfile_arg=didfile_arg)
         logger.info(f'Running command: {cmd}')
         rucio_attach_ds_proc = subprocess.run(cmd, shell=True)
         assert rucio_attach_ds_proc.returncode == 0
 
     def rucio_add_rule(self, dataset_did, dest_rse, num_copies=1):
+        proxy_arg = '--certificate {proxy}'.format(proxy=self.proxy)
         account_arg = '-a {rucio_account}'.format(rucio_account=self.rucio_account)
-        cmd = 'rucio {account_arg} add-rule {dataset_did} {num_copies} {dest_rse}'.format(
-            account_arg=account_arg, dataset_did=dataset_did, num_copies=num_copies, dest_rse=dest_rse)
+        cmd = 'rucio {proxy_arg} {account_arg} add-rule {dataset_did} {num_copies} {dest_rse}'\
+            .format(proxy_arg=proxy_arg, account_arg=account_arg, dataset_did=dataset_did, num_copies=num_copies, dest_rse=dest_rse)
         logger.info(f'Running command: {cmd}')
         rucio_add_rule_proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
         assert rucio_add_rule_proc.returncode == 0
@@ -324,6 +334,7 @@ def create_file(data_dir, file_size):
 
 def main():
     args = parse_args()
+    logger.info(f'Arguments to Rucio test: {args}')
     dest_rses = args.end_rses.split(',')
 
     # Generate the files that will be transferred
@@ -345,6 +356,7 @@ def main():
         dest_rses,
         filenames,
         args.check_time,
+        args.proxy,
     )
     vhost = '/'
     sub_id = 'test'
@@ -390,11 +402,14 @@ def parse_args():
     parser.add_argument('--experiment',
         help='Name of the experiment this transfer test will be run for')
     parser.add_argument('--cert',
-        default=os.environ.get('X509_USER_PROXY', '/opt/rucio/etc/proxy'),
-        help='PEM certificate for Rucio authentication')
+        default=os.environ.get('BROKER_CERT', '/opt/certs/hostcert.pem'),
+        help='PEM certificate for BROKER authentication (NO VOMS ATTRIBUTES)')
     parser.add_argument('--key',
-        default=os.environ.get('X509_USER_PROXY', '/opt/rucio/etc/proxy'),
-        help='PEM key for Rucio authentication')
+        default=os.environ.get('BROKER_KEY', '/opt/certs/hostkey.pem'),
+        help='PEM key for BROKER authentication (NO VOMS ATTRIBUTES)')
+    parser.add_argument('--proxy',
+        default=os.environ.get('X509_USER_PROXY', '/opt/proxy'),
+        help='PEM key for Rucio/Storage authentication (YES, VOMS ATTRIBUTES)')
     parser.add_argument('--host',
         help='Rucio message broker to connect to in order to listen to the event stream.')
     parser.add_argument('--port',
